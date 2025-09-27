@@ -1,16 +1,36 @@
-# Apple Silicon NEON Prime Filter - Ultra Performance Edition 🚀
+# Apple Silicon NEON Prime Filter - Ultra Performance Edition
 
 High-performance SIMD prime filtering using ARM NEON intrinsics, optimized for Apple Silicon (M1/M2/M3). Achieves **1.35+ billion numbers/second** throughput using wheel factorization and Barrett reduction.
 
-## 🎯 Performance Results
+## Performance Results
 
 | Implementation | Throughput | Use Case |
 |---------------|------------|----------|
-| **Wheel-30 + Bitmap** | **1.35-1.36 Gnum/s** | ⚡ Fastest - Composite-heavy workloads |
+| **Wheel-30 + Bitmap** | **1.35-1.36 Gnum/s** | Fastest - Composite-heavy workloads |
 | Ultra Barrett-16 | 0.25 Gnum/s | Uniform/random distributions |
 | Standard Barrett | 0.15-0.20 Gnum/s | Baseline implementation |
 
-## 🏗️ Architecture
+## Project Structure
+
+```
+apple-neon-prime8/
+├── src/                    # Core implementation
+│   ├── simd_fast.hpp       # Main header
+│   ├── simd_wheel.cpp      # Wheel-30 prefilter (FASTEST)
+│   ├── simd_ultra_fast.cpp # Ultra Barrett-16
+│   ├── simd_optimized.cpp  # Combined optimizations
+│   └── primes_tables.hpp   # Prime constants
+├── bench/                  # Performance benchmarks
+│   ├── bench_optimized.cpp # Main benchmark
+│   ├── bench_wheel.cpp     # Wheel-specific
+│   └── bench_ultra.cpp     # Ultra-specific
+├── test/                   # Correctness tests
+│   ├── test_fixes.cpp      # Validation tests
+│   └── correctness.cpp     # Full correctness suite
+└── README.md
+```
+
+## Architecture
 
 ### Three Optimization Levels
 
@@ -31,7 +51,7 @@ High-performance SIMD prime filtering using ARM NEON intrinsics, optimized for A
    - Tuned prefetch distances
    - Alignment hints for better codegen
 
-## 📦 Building
+## Building
 
 ### Requirements
 - Apple Silicon Mac (M1/M2/M3)
@@ -41,12 +61,12 @@ High-performance SIMD prime filtering using ARM NEON intrinsics, optimized for A
 ### Quick Build
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/apple-neon-prime8.git
+git clone https://github.com/jguida941/apple-neon-prime8.git
 cd apple-neon-prime8
 
-# Build all implementations
+# Build benchmark
 clang++ -std=c++17 -O3 -march=native -I. \
-    bench_optimized.cpp \
+    bench/bench_optimized.cpp \
     src/simd_wheel.cpp \
     src/simd_ultra_fast.cpp \
     src/simd_optimized.cpp \
@@ -54,9 +74,17 @@ clang++ -std=c++17 -O3 -march=native -I. \
 
 # Run benchmarks
 ./prime_filter
+
+# Build and run tests
+clang++ -std=c++17 -O3 -march=native -I. \
+    test/test_fixes.cpp \
+    src/simd_wheel.cpp \
+    src/simd_ultra_fast.cpp \
+    -o test_prime
+./test_prime
 ```
 
-## 🚀 Usage
+## Usage
 
 ### Fastest Path - Wheel-30 with Bitmap Output
 ```cpp
@@ -69,7 +97,7 @@ std::vector<uint64_t> numbers(1000000);
 // Allocate bitmap (1 bit per number)
 std::vector<uint8_t> bitmap((1000000 + 7) / 8);
 
-// Filter at 1.35+ Gnum/s\!
+// Filter at 1.35+ Gnum/s
 neon_wheel::filter_stream_u64_wheel_bitmap(
     numbers.data(),
     bitmap.data(),
