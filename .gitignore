@@ -1,0 +1,42 @@
+# Build artifacts
+build/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+
+# Executables (binary files without extension)
+prime_filter
+/bench_final
+/bench_fixed
+/bench_optimized
+/bench_ultra
+/bench_wheel
+/bench_working
+/test_fixes
+/test_simple
+/test_ultra
+/test_wheel
+correctness
+comprehensive_test
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Debug
+*.dSYM/
+core
+vgcore.*
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+CTestTestfile.cmake
