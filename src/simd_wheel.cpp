@@ -14,11 +14,18 @@ uint8_t movemask8_from_u32(uint32x4_t sv1, uint32x4_t sv2) {
   uint16x4_t s1 = vmovn_u32(sv1);
   uint16x4_t s2 = vmovn_u32(sv2);
   uint8x8_t  b  = vmovn_u16(vcombine_u16(s1, s2)); // 0xFF/0x00 per lane
-  // turn bytes into bits and horizontally sum
-  const uint8x8_t w = {1,2,4,8,16,32,64,128};
-  uint8x8_t t = vand_u8(vshr_n_u8(b, 7), w);
-  t = vpadd_u8(t, t); t = vpadd_u8(t, t); t = vpadd_u8(t, t);
-  return vget_lane_u8(t, 0);
+
+  // Extract each byte's MSB and build mask
+  uint8_t mask = 0;
+  mask |= (vget_lane_u8(b, 0) & 0x80) ? 0x01 : 0;
+  mask |= (vget_lane_u8(b, 1) & 0x80) ? 0x02 : 0;
+  mask |= (vget_lane_u8(b, 2) & 0x80) ? 0x04 : 0;
+  mask |= (vget_lane_u8(b, 3) & 0x80) ? 0x08 : 0;
+  mask |= (vget_lane_u8(b, 4) & 0x80) ? 0x10 : 0;
+  mask |= (vget_lane_u8(b, 5) & 0x80) ? 0x20 : 0;
+  mask |= (vget_lane_u8(b, 6) & 0x80) ? 0x40 : 0;
+  mask |= (vget_lane_u8(b, 7) & 0x80) ? 0x80 : 0;
+  return mask;
 }
 
 __attribute__((always_inline)) inline
@@ -37,7 +44,7 @@ static const uint8_t WHEEL30_COPRIME[30] = {
 };
 
 // Barrett constant for mod 30
-static const uint32_t MU30 = 2863311531u; // ceil(2^32/30)
+static const uint32_t MU30 = 143165576u; // floor(2^32 / 30)
 
 // === Quad Barrett reduction (from Ultra) ===
 __attribute__((always_inline)) inline
@@ -78,12 +85,13 @@ __attribute__((always_inline)) inline
 uint32x4_t wheel30_mask(uint32x4_t n) {
   // Compute n % 30 using Barrett
   const uint32x4_t thirty = vdupq_n_u32(30);
-  const uint32x4_t mu = vdupq_n_u32(MU30);
+  const uint32x4_t mu30 = vdupq_n_u32(MU30);
 
-  uint64x2_t lo = vmull_u32(vget_low_u32(n), vget_low_u32(mu));
-  uint64x2_t hi = vmull_u32(vget_high_u32(n), vget_high_u32(mu));
+  uint64x2_t lo = vmull_u32(vget_low_u32(n), vget_low_u32(mu30));
+  uint64x2_t hi = vmull_u32(vget_high_u32(n), vget_high_u32(mu30));
   uint32x4_t q = vcombine_u32(vshrn_n_u64(lo, 32), vshrn_n_u64(hi, 32));
   uint32x4_t r = vsubq_u32(n, vmulq_u32(q, thirty));
+  r = vsubq_u32(r, vandq_u32(vcgeq_u32(r, thirty), thirty)); // if (r>=30) r-=30
 
   // Check coprime residues: 1,7,11,13,17,19,23,29
   const uint32x4_t r1  = vdupq_n_u32(1);
@@ -142,6 +150,23 @@ uint16_t filter16_u64_wheel_bitmap(const uint64_t* __restrict ptr) {
   uint32x4_t wheel3 = wheel30_mask(n3);
   uint32x4_t wheel4 = wheel30_mask(n4);
 
+  // Special case: primes 2, 3, 5 must always pass
+  const uint32x4_t two = vdupq_n_u32(2);
+  const uint32x4_t three = vdupq_n_u32(3);
+  const uint32x4_t five = vdupq_n_u32(5);
+  wheel1 = vorrq_u32(wheel1, vceqq_u32(n1, two));
+  wheel1 = vorrq_u32(wheel1, vceqq_u32(n1, three));
+  wheel1 = vorrq_u32(wheel1, vceqq_u32(n1, five));
+  wheel2 = vorrq_u32(wheel2, vceqq_u32(n2, two));
+  wheel2 = vorrq_u32(wheel2, vceqq_u32(n2, three));
+  wheel2 = vorrq_u32(wheel2, vceqq_u32(n2, five));
+  wheel3 = vorrq_u32(wheel3, vceqq_u32(n3, two));
+  wheel3 = vorrq_u32(wheel3, vceqq_u32(n3, three));
+  wheel3 = vorrq_u32(wheel3, vceqq_u32(n3, five));
+  wheel4 = vorrq_u32(wheel4, vceqq_u32(n4, two));
+  wheel4 = vorrq_u32(wheel4, vceqq_u32(n4, three));
+  wheel4 = vorrq_u32(wheel4, vceqq_u32(n4, five));
+
   // If all lanes fail wheel test, return 0 (all composite)
   if (!all32) {
     // Need to apply 64-bit masks
@@ -159,7 +184,7 @@ uint16_t filter16_u64_wheel_bitmap(const uint64_t* __restrict ptr) {
     wheel4 = vandq_u32(wheel4, en4);
   }
 
-  // Quick check: if no lanes pass wheel, all are composite
+  // Quick check: if no lanes pass wheel (after special cases), all are composite
   if ((vmaxvq_u32(wheel1) | vmaxvq_u32(wheel2) |
        vmaxvq_u32(wheel3) | vmaxvq_u32(wheel4)) == 0) {
     return 0;
@@ -242,24 +267,21 @@ void filter_stream_u64_wheel_bitmap(const uint64_t* __restrict numbers,
 
     uint16_t b0 = filter16_u64_wheel_bitmap(numbers + i);
     uint16_t b1 = filter16_u64_wheel_bitmap(numbers + i + 16);
-    uint32_t word = b0 | (uint32_t(b1) << 16);
+    uint32_t packed = b0 | (uint32_t(b1) << 16);
 
     // Fix: Use memcpy to avoid aliasing issues
-    const size_t byte_off = i >> 3; // i/8
-    std::memcpy(bitmap + byte_off, &word, sizeof(word));
+    std::memcpy(bitmap + (i >> 3), &packed, 4);
   }
 
   // Process remaining 16
   if (i + 16 <= count) {
-    uint16_t b = filter16_u64_wheel_bitmap(numbers + i);
-    const size_t byte_off = i >> 3;
-    std::memcpy(bitmap + byte_off, &b, sizeof(b));
+    uint16_t bits = filter16_u64_wheel_bitmap(numbers + i);
+    std::memcpy(bitmap + (i >> 3), &bits, 2);
     i += 16;
   }
 
   // Process remaining 8
   if (i + 8 <= count) {
-    // Fix: Remember base index before loop
     const size_t base = i;
     uint8_t byte = 0;
     for (int bit = 0; bit < 8 && i < count; ++bit, ++i) {
@@ -268,9 +290,13 @@ void filter_stream_u64_wheel_bitmap(const uint64_t* __restrict numbers,
 
       // Quick wheel check
       uint32_t n32 = (uint32_t)n;
-      if (n32 % 2 == 0 && n32 != 2) continue;
-      if (n32 % 3 == 0 && n32 != 3) continue;
-      if (n32 % 5 == 0 && n32 != 5) continue;
+      if (n32 == 2 || n32 == 3 || n32 == 5) {
+        byte |= 1 << bit;
+        continue;
+      }
+      if (n32 % 2 == 0) continue;
+      if (n32 % 3 == 0) continue;
+      if (n32 % 5 == 0) continue;
 
       // Full Barrett check
       bool survive = true;
@@ -296,22 +322,25 @@ void filter_stream_u64_wheel_bitmap(const uint64_t* __restrict numbers,
 
       if (survive) byte |= 1 << bit;
     }
-    bitmap[base >> 3] = byte;  // Fix: Write to correct position
+    bitmap[base >> 3] = byte;
   }
 
   // Final tail bits
   if (i < count) {
     const size_t base = i;
     uint8_t last = 0;
-    unsigned mask = 0;
     for (unsigned bit = 0; i < count; ++bit, ++i) {
       uint64_t n = numbers[i];
       if (n > 0xffffffffu) continue;
 
       uint32_t n32 = (uint32_t)n;
-      if (n32 % 2 == 0 && n32 != 2) continue;
-      if (n32 % 3 == 0 && n32 != 3) continue;
-      if (n32 % 5 == 0 && n32 != 5) continue;
+      if (n32 == 2 || n32 == 3 || n32 == 5) {
+        last |= (1u << bit);
+        continue;
+      }
+      if (n32 % 2 == 0) continue;
+      if (n32 % 3 == 0) continue;
+      if (n32 % 5 == 0) continue;
 
       bool survive = true;
       for (int k = 3; k < 8; ++k) {
@@ -334,12 +363,9 @@ void filter_stream_u64_wheel_bitmap(const uint64_t* __restrict numbers,
         }
       }
 
-      if (survive) last |= 1 << bit;
-      mask |= (1u << bit);
+      if (survive) last |= (1u << bit);
     }
-    // Fix: Apply mask to preserve any existing bits
-    const size_t byte_off = base >> 3;
-    bitmap[byte_off] = (bitmap[byte_off] & ~uint8_t(mask)) | (last & uint8_t(mask));
+    bitmap[base >> 3] = last;
   }
 }
 

@@ -43,3 +43,21 @@ void filter_stream_u64_barrett16_ultra(const uint64_t* __restrict numbers,
                                        size_t count);
 
 } // namespace neon_ultra
+
+namespace neon_wheel210 {
+
+// Wheel-210 (2×3×5×7) - 77.1% elimination
+void filter_stream_u64_wheel210_bitmap(const uint64_t* __restrict numbers,
+                                       uint8_t*       __restrict bitmap,
+                                       size_t count);
+
+} // namespace neon_wheel210
+
+namespace neon_wheel210_efficient {
+
+// Efficient Wheel-210 (Wheel-30 + mod 7) - 77.1% elimination
+void filter_stream_u64_wheel210_efficient_bitmap(const uint64_t* __restrict numbers,
+                                                 uint8_t*       __restrict bitmap,
+                                                 size_t count);
+
+} // namespace neon_wheel210_efficient
