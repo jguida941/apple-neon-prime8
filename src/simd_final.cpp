@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Justin Guida
 #include "simd_fast.hpp"
 #include "primes_tables.hpp"
 #include <arm_neon.h>
