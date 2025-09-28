@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Justin Guida
 #pragma once
 #include <cstdint>
 #include <cstddef>
