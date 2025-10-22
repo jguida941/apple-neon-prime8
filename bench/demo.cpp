@@ -14,7 +14,7 @@ struct Result {
     size_t survivors{};
 };
 
-Result run_scalar(const std::vector<uint32_t>& numbers) {
+Result run_scalar(const std::vector<uint64_t>& numbers) {
     auto start = Clock::now();
     size_t survivors = 0;
     for (uint32_t n : numbers) {
@@ -31,27 +31,11 @@ Result run_scalar(const std::vector<uint32_t>& numbers) {
     return {secs, survivors};
 }
 
-Result run_wheel30(const std::vector<uint32_t>& numbers) {
+Result run_wheel30(const std::vector<uint64_t>& numbers) {
     const size_t n = numbers.size();
     std::vector<uint8_t> bitmap((n + 7) / 8);
     auto start = Clock::now();
-    neon_wheel::filter_stream_u64_wheel_bitmap(
-        reinterpret_cast<const uint64_t*>(numbers.data()), bitmap.data(), n);
-    auto stop = Clock::now();
-    size_t survivors = 0;
-    for (size_t i = 0; i < n; ++i) {
-        if (bitmap[i >> 3] & (1u << (i & 7))) ++survivors;
-    }
-    double secs = std::chrono::duration<double>(stop - start).count();
-    return {secs, survivors};
-}
-
-Result run_wheel210(const std::vector<uint32_t>& numbers) {
-    const size_t n = numbers.size();
-    std::vector<uint8_t> bitmap((n + 7) / 8);
-    auto start = Clock::now();
-    neon_wheel210_efficient::filter_stream_u64_wheel210_efficient_bitmap(
-        reinterpret_cast<const uint64_t*>(numbers.data()), bitmap.data(), n);
+    neon_wheel::filter_stream_u64_wheel_bitmap(numbers.data(), bitmap.data(), n);
     auto stop = Clock::now();
     size_t survivors = 0;
     for (size_t i = 0; i < n; ++i) {
@@ -67,12 +51,11 @@ int main(int argc, char** argv) {
 
     std::mt19937_64 rng(42);
     std::uniform_int_distribution<uint32_t> dist(0, 0xffffffffu);
-    std::vector<uint32_t> numbers(count);
+    std::vector<uint64_t> numbers(count);
     for (auto& v : numbers) v = dist(rng);
 
     auto scalar = run_scalar(numbers);
     auto w30    = run_wheel30(numbers);
-    auto w210   = run_wheel210(numbers);
 
     std::printf("Dataset size: %zu\n", count);
     std::printf("Scalar Barrett:   %.3f ms, throughput %.2f Mnums/s, survivors %zu\n",
@@ -83,10 +66,7 @@ int main(int argc, char** argv) {
                 w30.seconds * 1e3,
                 (count / 1e6) / w30.seconds,
                 w30.survivors);
-    std::printf("Wheel-210 bitmap: %.3f ms, throughput %.2f Mnums/s, survivors %zu\n",
-                w210.seconds * 1e3,
-                (count / 1e6) / w210.seconds,
-                w210.survivors);
+    std::puts("Wheel-210 bitmap: [disabled pending kernel fix]");
 
     return 0;
 }

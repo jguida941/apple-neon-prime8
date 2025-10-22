@@ -66,10 +66,21 @@ Apache License 2.0 — see `LICENSE` for details.
 
 ## Demos & Diagnostics
 
-- Run the SIMD demo (scalar vs wheel-30 vs wheel-210):
+- Run the SIMD demo (scalar vs wheel-30). Wheel-210 output is currently
+  disabled pending the kernel fix:
   ```bash
   ./build/demo 10000000
   ```
+  The demo executes a single pass that counts survivors, so the reported
+  throughput is lower (~0.25 Gnum/s on random data) than the sustained rate in
+  the full benchmarks.
+- For headline numbers run the release benchmark harness instead:
+  ```bash
+  ./build/bench
+  ./bench/bench_comparison
+  ```
+  These print the ~0.37 Gnum/s byte-path and ~0.26 Gnum/s wheel-30 throughput
+  captured in `BENCHMARK_RESULTS.md`.
 - Run wheel-30/wheel-210 vs scalar unit test (expected to fail for wheel-210
   until the bug is fixed):
   ```bash
