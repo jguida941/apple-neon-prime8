@@ -13,8 +13,8 @@ namespace neon_wheel210_efficient {
 // This avoids 48 residue checks and uses only one extra Barrett reduction
 
 // Barrett constants (FIXED values)
-static const uint32_t MU30 = 143165577u;   // ceil(2^32/30)
-static const uint32_t MU7  = 613566757u;   // ceil(2^32/7)
+static const uint32_t MU30 = 143165576u;   // floor(2^32/30)
+static const uint32_t MU7  = 613566756u;   // floor(2^32/7)
 
 // === SIMD bitpack helpers ===
 __attribute__((always_inline)) inline
@@ -124,13 +124,7 @@ uint16_t filter16_u64_wheel210_efficient(const uint64_t* __restrict ptr) {
     uint64x2_t a6 = vld1q_u64(ptr + 12);
     uint64x2_t a7 = vld1q_u64(ptr + 14);
 
-    // Narrow to 32-bit
-    uint32x4_t n1 = vcombine_u32(vmovn_u64(a0), vmovn_u64(a1));
-    uint32x4_t n2 = vcombine_u32(vmovn_u64(a2), vmovn_u64(a3));
-    uint32x4_t n3 = vcombine_u32(vmovn_u64(a4), vmovn_u64(a5));
-    uint32x4_t n4 = vcombine_u32(vmovn_u64(a6), vmovn_u64(a7));
-
-    // Check if all fit in 32 bits
+    // Check high halves to see if any lanes exceed 32 bits
     uint64x2_t h01 = vorrq_u64(vshrq_n_u64(a0, 32), vshrq_n_u64(a1, 32));
     uint64x2_t h23 = vorrq_u64(vshrq_n_u64(a2, 32), vshrq_n_u64(a3, 32));
     uint64x2_t h45 = vorrq_u64(vshrq_n_u64(a4, 32), vshrq_n_u64(a5, 32));
@@ -138,16 +132,61 @@ uint16_t filter16_u64_wheel210_efficient(const uint64_t* __restrict ptr) {
     uint64x2_t any = vorrq_u64(vorrq_u64(h01, h23), vorrq_u64(h45, h67));
     const bool all32 = ((vgetq_lane_u64(any,0) | vgetq_lane_u64(any,1)) == 0ULL);
 
-    // Efficient Wheel-210: first Wheel-30, then mod 7 check
-    uint32x4_t w30_1 = wheel30_pass(n1);
-    uint32x4_t w30_2 = wheel30_pass(n2);
-    uint32x4_t w30_3 = wheel30_pass(n3);
-    uint32x4_t w30_4 = wheel30_pass(n4);
+    // Narrow to 32-bit lanes
+    uint32x4_t n1 = vcombine_u32(vmovn_u64(a0), vmovn_u64(a1));
+    uint32x4_t n2 = vcombine_u32(vmovn_u64(a2), vmovn_u64(a3));
+    uint32x4_t n3 = vcombine_u32(vmovn_u64(a4), vmovn_u64(a5));
+    uint32x4_t n4 = vcombine_u32(vmovn_u64(a6), vmovn_u64(a7));
 
-    uint32x4_t wheel1 = wheel210_pass(n1, w30_1);
-    uint32x4_t wheel2 = wheel210_pass(n2, w30_2);
-    uint32x4_t wheel3 = wheel210_pass(n3, w30_3);
-    uint32x4_t wheel4 = wheel210_pass(n4, w30_4);
+    // Wheel-30 pass
+    uint32x4_t wheel1 = wheel30_pass(n1);
+    uint32x4_t wheel2 = wheel30_pass(n2);
+    uint32x4_t wheel3 = wheel30_pass(n3);
+    uint32x4_t wheel4 = wheel30_pass(n4);
+
+    // Allow primes 2,3,5,7 explicitly
+    const uint32x4_t two   = vdupq_n_u32(2);
+    const uint32x4_t three = vdupq_n_u32(3);
+    const uint32x4_t five  = vdupq_n_u32(5);
+    const uint32x4_t seven = vdupq_n_u32(7);
+
+    wheel1 = vorrq_u32(wheel1, vceqq_u32(n1, two));
+    wheel1 = vorrq_u32(wheel1, vceqq_u32(n1, three));
+    wheel1 = vorrq_u32(wheel1, vceqq_u32(n1, five));
+    wheel1 = vorrq_u32(wheel1, vceqq_u32(n1, seven));
+
+    wheel2 = vorrq_u32(wheel2, vceqq_u32(n2, two));
+    wheel2 = vorrq_u32(wheel2, vceqq_u32(n2, three));
+    wheel2 = vorrq_u32(wheel2, vceqq_u32(n2, five));
+    wheel2 = vorrq_u32(wheel2, vceqq_u32(n2, seven));
+
+    wheel3 = vorrq_u32(wheel3, vceqq_u32(n3, two));
+    wheel3 = vorrq_u32(wheel3, vceqq_u32(n3, three));
+    wheel3 = vorrq_u32(wheel3, vceqq_u32(n3, five));
+    wheel3 = vorrq_u32(wheel3, vceqq_u32(n3, seven));
+
+    wheel4 = vorrq_u32(wheel4, vceqq_u32(n4, two));
+    wheel4 = vorrq_u32(wheel4, vceqq_u32(n4, three));
+    wheel4 = vorrq_u32(wheel4, vceqq_u32(n4, five));
+    wheel4 = vorrq_u32(wheel4, vceqq_u32(n4, seven));
+
+    // Apply mod 7 filter to achieve wheel-210
+    auto mod7_mask = [](uint32x4_t n) -> uint32x4_t {
+        const uint32x4_t mu = vdupq_n_u32(MU7);
+        const uint32x4_t p = vdupq_n_u32(7);
+        uint64x2_t lo = vmull_u32(vget_low_u32(n),  vget_low_u32(mu));
+        uint64x2_t hi = vmull_u32(vget_high_u32(n), vget_high_u32(mu));
+        uint32x4_t q = vcombine_u32(vshrn_n_u64(lo, 32), vshrn_n_u64(hi, 32));
+        uint32x4_t r = vsubq_u32(n, vmulq_u32(q, p));
+        r = vsubq_u32(r, vmulq_u32(vcgeq_u32(r, p), p));
+        uint32x4_t nz = vmvnq_u32(vceqq_u32(r, vdupq_n_u32(0)));
+        return vorrq_u32(nz, vceqq_u32(n, p));
+    };
+
+    wheel1 = vandq_u32(wheel1, mod7_mask(n1));
+    wheel2 = vandq_u32(wheel2, mod7_mask(n2));
+    wheel3 = vandq_u32(wheel3, mod7_mask(n3));
+    wheel4 = vandq_u32(wheel4, mod7_mask(n4));
 
     if (!all32) {
         uint32x4_t en1 = vceqq_u32(vcombine_u32(vmovn_u64(vshrq_n_u64(a0,32)),
@@ -164,17 +203,15 @@ uint16_t filter16_u64_wheel210_efficient(const uint64_t* __restrict ptr) {
         wheel4 = vandq_u32(wheel4, en4);
     }
 
-    // Quick exit if all fail wheel test
     if ((vmaxvq_u32(wheel1) | vmaxvq_u32(wheel2) |
          vmaxvq_u32(wheel3) | vmaxvq_u32(wheel4)) == 0) {
         return 0;
     }
 
-    // Full Barrett reduction for survivors (skip 2,3,5,7 - handled by wheel)
     const uint32x4_t zero = vdupq_n_u32(0);
     uint32x4_t m1 = zero, m2 = zero, m3 = zero, m4 = zero;
 
-    // Start from prime 11 (index 4)
+    // Skip primes 2,3,5,7 (already handled)
     for (int i = 4; i < 8; ++i) {
         const uint32x4_t p = vdupq_n_u32(SMALL_PRIMES[i]);
         const uint32x4_t mu = vdupq_n_u32(SMALL_MU[i]);
@@ -198,7 +235,6 @@ uint16_t filter16_u64_wheel210_efficient(const uint64_t* __restrict ptr) {
         m4 = vorrq_u32(m4, d4);
     }
 
-    // Continue with extended primes
     for (int i = 0; i < 8; ++i) {
         const uint32x4_t p = vdupq_n_u32(EXT_PRIMES[i]);
         const uint32x4_t mu = vdupq_n_u32(EXT_MU[i]);
@@ -222,7 +258,6 @@ uint16_t filter16_u64_wheel210_efficient(const uint64_t* __restrict ptr) {
         m4 = vorrq_u32(m4, d4);
     }
 
-    // Survivors
     uint32x4_t sv1 = vandq_u32(wheel1, vceqq_u32(m1, zero));
     uint32x4_t sv2 = vandq_u32(wheel2, vceqq_u32(m2, zero));
     uint32x4_t sv3 = vandq_u32(wheel3, vceqq_u32(m3, zero));

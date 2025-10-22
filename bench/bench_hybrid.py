@@ -6,24 +6,54 @@ Shows both speed (SIMD) and correctness (GMP) in one system
 
 import numpy as np
 import time
-import gmpy2
 import subprocess
-import ctypes
+import os
 from pathlib import Path
 
-def compile_simd():
-    """Compile the SIMD library to a shared library"""
-    print("Compiling SIMD library...")
+import gmpy2
+
+def ensure_wheel30_driver():
+    """Compile the wheel bitmap driver executable if it is missing."""
+    bench_dir = Path("bench")
+    bench_dir.mkdir(parents=True, exist_ok=True)
+    driver_path = bench_dir / "hybrid_driver"
+    if driver_path.exists():
+        return str(driver_path)
+
+    print("Compiling hybrid wheel driver...")
     cmd = [
-        "clang++", "-std=c++17", "-O3", "-march=native", "-shared", "-fPIC",
-        "src/simd_wheel.cpp", "src/simd_ultra_fast.cpp",
-        "src/simd_wheel210_efficient.cpp",
-        "-o", "libprime_simd.dylib"
+        "clang++",
+        "-std=c++20",
+        "-O3",
+        "-ffast-math",
+        "-march=native",
+        "-I",
+        "src",
+        "bench/hybrid_driver.cpp",
+        "build/libprime8.a",
+        "-o",
+        str(driver_path),
     ]
     subprocess.run(cmd, check=True)
-    return ctypes.CDLL("./libprime_simd.dylib")
+    return str(driver_path)
 
-def benchmark_hybrid_pipeline(numbers, simd_func=None):
+def run_driver(driver_path, mode, numbers):
+    """Invoke the C++ driver and return surviving candidates."""
+    result = subprocess.run(
+        [driver_path, mode, str(len(numbers))],
+        input=numbers.tobytes(),
+        stdout=subprocess.PIPE,
+        check=True,
+    )
+    candidates = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line:
+            candidates.append(int(line))
+    return candidates
+
+
+def benchmark_hybrid_pipeline(numbers, driver=None, mode=None):
     """
     Hybrid pipeline:
     1. SIMD prefilter (fast, eliminates 99% of composites)
@@ -33,20 +63,11 @@ def benchmark_hybrid_pipeline(numbers, simd_func=None):
     bitmap_size = (size + 7) // 8
 
     # Stage 1: SIMD prefilter (if available)
-    if simd_func:
-        bitmap = (ctypes.c_uint8 * bitmap_size)()
-        numbers_ptr = numbers.ctypes.data_as(ctypes.POINTER(ctypes.c_uint64))
-
+    if driver and mode:
         start_simd = time.perf_counter()
-        simd_func(numbers_ptr, bitmap, size)
+        candidates = run_driver(driver, mode, numbers)
         end_simd = time.perf_counter()
         simd_time = end_simd - start_simd
-
-        # Extract candidates from bitmap
-        candidates = []
-        for i in range(size):
-            if bitmap[i >> 3] & (1 << (i & 7)):
-                candidates.append(numbers[i])
     else:
         # No SIMD, all numbers are candidates
         simd_time = 0
@@ -64,7 +85,7 @@ def benchmark_hybrid_pipeline(numbers, simd_func=None):
         'total_time': simd_time + gmp_time,
         'candidates': len(candidates),
         'primes': len(confirmed_primes),
-        'reduction': 100.0 * (1 - len(candidates)/size) if simd_func else 0
+        'reduction': 100.0 * (1 - len(candidates)/size) if driver and mode else 0
     }
 
 def main():
@@ -75,24 +96,12 @@ def main():
 
     # Try to compile and load SIMD library
     try:
-        lib = compile_simd()
+        driver30 = ensure_wheel30_driver()
+    except Exception as exc:
+        print(f"WARNING: Could not build wheel-30 driver ({exc}); using Python fallback")
+        driver30 = None
 
-        # Get function pointers
-        wheel30_func = lib._ZN10neon_wheel35filter_stream_u64_wheel_bitmapEPKmPhm
-        wheel30_func.argtypes = [ctypes.POINTER(ctypes.c_uint64),
-                                 ctypes.POINTER(ctypes.c_uint8),
-                                 ctypes.c_size_t]
-
-        wheel210_func = lib._ZN25neon_wheel210_efficient41filter_stream_u64_wheel210_efficient_bitmapEPKmPhm
-        wheel210_func.argtypes = [ctypes.POINTER(ctypes.c_uint64),
-                                  ctypes.POINTER(ctypes.c_uint8),
-                                  ctypes.c_size_t]
-        has_simd = True
-    except:
-        print("WARNING: Could not load SIMD library, using Python fallback")
-        wheel30_func = None
-        wheel210_func = None
-        has_simd = False
+    has_simd = driver30 is not None
 
     # Test different dataset sizes
     sizes = [10000, 100000, 1000000]
@@ -110,19 +119,15 @@ def main():
 
         # 1. GMP only (no prefilter)
         print("Running GMP only...", end=" ", flush=True)
-        results['gmp_only'] = benchmark_hybrid_pipeline(numbers, simd_func=None)
+        results['gmp_only'] = benchmark_hybrid_pipeline(numbers, driver=None, mode=None)
         print(f"Done. Found {results['gmp_only']['primes']} primes")
 
         if has_simd:
-            # 2. Wheel-30 + GMP
             print("Running Wheel-30 + GMP...", end=" ", flush=True)
-            results['wheel30_gmp'] = benchmark_hybrid_pipeline(numbers, wheel30_func)
+            results['wheel30_gmp'] = benchmark_hybrid_pipeline(
+                numbers, driver=driver30, mode="wheel30"
+            )
             print(f"Done. Found {results['wheel30_gmp']['primes']} primes")
-
-            # 3. Wheel-210 + GMP
-            print("Running Wheel-210 + GMP...", end=" ", flush=True)
-            results['wheel210_gmp'] = benchmark_hybrid_pipeline(numbers, wheel210_func)
-            print(f"Done. Found {results['wheel210_gmp']['primes']} primes")
 
         # Print results table
         print("\n" + "="*70)
@@ -137,14 +142,13 @@ def main():
             pipeline_name = {
                 'gmp_only': 'GMP Only',
                 'wheel30_gmp': 'SIMD Wheel-30 + GMP',
-                'wheel210_gmp': 'SIMD Wheel-210 + GMP'
             }.get(name, name)
 
             speedup = baseline / res['total_time']
             print(f"{pipeline_name:<25} {res['total_time']:>10.4f}s "
                   f"{speedup:>7.1f}x {res['reduction']:>9.1f}%")
 
-        if has_simd:
+        if has_simd and 'wheel30_gmp' in results:
             print("\nBREAKDOWN (Wheel-30 + GMP):")
             w30 = results['wheel30_gmp']
             print(f"  SIMD prefilter: {w30['simd_time']*1000:>8.2f} ms "
@@ -158,17 +162,15 @@ def main():
         # Throughput comparison
         print("\nTHROUGHPUT:")
         print(f"  GMP only:        {size/results['gmp_only']['total_time']/1e9:.4f} Gnum/s")
-        if has_simd:
+        if has_simd and 'wheel30_gmp' in results:
             print(f"  Wheel-30 + GMP:  {size/results['wheel30_gmp']['total_time']/1e9:.4f} Gnum/s")
-            print(f"  Wheel-210 + GMP: {size/results['wheel210_gmp']['total_time']/1e9:.4f} Gnum/s")
 
     print("\n" + "="*70)
     print("KEY INSIGHTS:")
     print("-"*70)
     print("1. SIMD prefilter eliminates 99% of composites in microseconds")
     print("2. GMP only needs to verify the 1% that survive")
-    print("3. Hybrid pipeline is faster AND mathematically correct")
-    print("4. Wheel-210 gives marginal improvement over Wheel-30")
+    print("3. Hybrid pipeline (wheel-30) is mathematically correct and eliminates most composites")
     print("="*70 + "\n")
 
 if __name__ == "__main__":

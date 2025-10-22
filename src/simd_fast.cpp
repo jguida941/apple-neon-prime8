@@ -92,7 +92,7 @@ uint8x8_t bytes_from_u32_mask(uint32x4_t sv1, uint32x4_t sv2) {
 }
 
 // --- replace the whole function ---
-__attribute__((always_inline)) inline
+__attribute__((used)) __attribute__((always_inline)) inline
 void filter8_u64_barrett16(const uint64_t* __restrict ptr,
                            uint8_t*       __restrict out)
 {
@@ -320,4 +320,3 @@ void filter_stream_u64_barrett16_bitmap(const uint64_t* __restrict numbers,
   }
 }
 } // namespace neon_fast
-
